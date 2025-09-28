@@ -6,6 +6,7 @@ import sqlite3
 import os
 import json
 import platform
+import re
 from datetime import datetime
 from colorama import init
 import threading
@@ -19,7 +20,7 @@ class CursorAccountManager:
     def __init__(self, root):
         self.root = root
         self.root.title("Cursor Account Manager")
-        self.root.geometry("900x700")
+        self.root.geometry("900x720")
         self.root.resizable(True, True)
 
         self.current_account_data = {}
@@ -69,17 +70,115 @@ class CursorAccountManager:
         return None
 
     def get_token_from_cursor_config(self):
-        """Get token using cursor_acc_info approach"""
+        """Get token using integrated token retrieval methods"""
         try:
-            # Try to import and use cursor_acc_info token retrieval
-            import cursor_acc_info
-            return cursor_acc_info.get_token()
-        except ImportError:
-            # Fallback to basic token extraction if cursor_acc_info not available
+            # Try fallback token retrieval methods from multiple sources
+            system = platform.system()
+            
+            # Determine paths based on system
+            if system == "Windows":
+                storage_path = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Cursor", "User", "globalStorage", "storage.json")
+                session_path = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Cursor", "Session Storage")
+            elif system == "Darwin":  # macOS
+                storage_path = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Cursor", "User", "globalStorage", "storage.json")
+                session_path = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Cursor", "Session Storage")
+            else:  # Linux
+                storage_path = os.path.join(os.path.expanduser("~"), ".config", "Cursor", "User", "globalStorage", "storage.json")
+                session_path = os.path.join(os.path.expanduser("~"), ".config", "Cursor", "Session Storage")
+            
+            # Try to get token from storage.json first
+            token = self._get_token_from_storage(storage_path)
+            if token:
+                return token
+                
+            # Try to get token from sqlite database (already implemented in existing method)
+            token = self._get_token_from_sqlite()
+            if token:
+                return token
+                
+            # Try to get token from session storage as last resort
+            token = self._get_token_from_session(session_path)
+            if token:
+                return token
+                
             return None
+            
         except Exception as e:
-            logging.error(f"Error getting token from cursor_acc_info: {e}")
+            logging.error(f"Error getting token from cursor config: {e}")
             return None
+    
+    def _get_token_from_storage(self, storage_path):
+        """Get token from storage.json"""
+        if not os.path.exists(storage_path):
+            return None
+            
+        try:
+            with open(storage_path, 'r', encoding='utf-8-sig') as f:
+                data = json.load(f)
+                # Try to get accessToken
+                if 'cursorAuth/accessToken' in data:
+                    return data['cursorAuth/accessToken']
+                
+                # Try other possible keys
+                for key in data:
+                    if 'token' in key.lower() and isinstance(data[key], str) and len(data[key]) > 20:
+                        return data[key]
+        except Exception as e:
+            logging.error(f"Get token from storage.json failed: {e}")
+        
+        return None
+    
+    def _get_token_from_sqlite(self):
+        """Get token from sqlite database using existing connection method"""
+        try:
+            conn = self.connect_to_database()
+            if not conn:
+                return None
+                
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM ItemTable WHERE key LIKE '%token%'")
+            rows = cursor.fetchall()
+            conn.close()
+            
+            for row in rows:
+                try:
+                    value = row[0]
+                    if isinstance(value, str) and len(value) > 20:
+                        return value
+                    # Try to parse JSON
+                    data = json.loads(value)
+                    if isinstance(data, dict) and 'token' in data:
+                        return data['token']
+                except:
+                    continue
+        except Exception as e:
+            logging.error(f"Get token from sqlite failed: {e}")
+        
+        return None
+    
+    def _get_token_from_session(self, session_path):
+        """Get token from session storage"""
+        if not os.path.exists(session_path):
+            return None
+            
+        try:
+            # Try to find all possible session files
+            for file in os.listdir(session_path):
+                if file.endswith('.log'):
+                    file_path = os.path.join(session_path, file)
+                    try:
+                        with open(file_path, 'rb') as f:
+                            content = f.read().decode('utf-8', errors='ignore')
+                            # Find token pattern
+                            token_match = re.search(r'"token":"([^"]+)"', content)
+                            if token_match:
+                                return token_match.group(1)
+                    except:
+                        continue
+        except Exception as e:
+            logging.error(f"Get token from session failed: {e}")
+        
+        return None
 
     def get_usage_info(self, token):
         url = "https://www.cursor.com/api/usage"
@@ -312,11 +411,16 @@ class CursorAccountManager:
         button_frame = ttk.Frame(parent)
         button_frame.grid(row=2, column=0, pady=(0, 15))
 
-        ttk.Button(button_frame, text="↻ Refresh", command=self.refresh_account_info).grid(row=0, column=0, padx=(0, 10))
-        ttk.Button(button_frame, text="💾 Save Account", command=self.save_current_account).grid(row=0, column=1, padx=(0, 10))
-        ttk.Button(button_frame, text="⚙ Manual Input", command=self.manual_input_dialog).grid(row=0, column=2, padx=(0, 10))
-        ttk.Button(button_frame, text="📤 Export Data", command=self.export_account_data).grid(row=0, column=3, padx=(0, 10))
-        ttk.Button(button_frame, text="🚪 Logout", command=self.logout_current_account).grid(row=0, column=4, padx=(0, 10))
+        # Create buttons with consistent icon and text alignment using emoji variants
+        ttk.Button(button_frame, text="🔄 Refresh", command=self.refresh_account_info).grid(row=0, column=0, padx=(0, 10), sticky='ew')
+        ttk.Button(button_frame, text="💾 Save Account", command=self.save_current_account).grid(row=0, column=1, padx=(0, 10), sticky='ew')
+        ttk.Button(button_frame, text="⚙️ Manual Input", command=self.manual_input_dialog).grid(row=0, column=2, padx=(0, 10), sticky='ew')
+        ttk.Button(button_frame, text="📤 Export Data", command=self.export_account_data).grid(row=0, column=3, padx=(0, 10), sticky='ew')
+        ttk.Button(button_frame, text="🚪 Logout", command=self.logout_current_account).grid(row=0, column=4, padx=(0, 10), sticky='ew')
+        
+        # Configure button frame columns to have equal weight for consistent sizing
+        for i in range(5):
+            button_frame.columnconfigure(i, weight=1)
 
     def setup_saved_accounts_frame(self, parent):
         """Setup saved accounts management frame"""
@@ -883,17 +987,45 @@ class CursorAccountManager:
         """Open manual input dialog for account information"""
         dialog = tk.Toplevel(self.root)
         dialog.title("Manual Account Input")
-        dialog.geometry("600x400")
-        dialog.resizable(False, False)
-
+        
         # Make dialog modal
         dialog.transient(self.root)
         dialog.grab_set()
+        
+        # Get screen dimensions
+        screen_width = dialog.winfo_screenwidth()
+        screen_height = dialog.winfo_screenheight()
+        
+        # Calculate dialog size (responsive to screen size)
+        dialog_width = min(600, int(screen_width * 0.8))
+        dialog_height = min(500, int(screen_height * 0.8))
+        
+        # Calculate position to center the dialog on screen
+        x = (screen_width - dialog_width) // 2
+        y = (screen_height - dialog_height) // 2
+        
+        # Ensure dialog stays within screen bounds
+        x = max(0, min(x, screen_width - dialog_width))
+        y = max(0, min(y, screen_height - dialog_height))
+        
+        dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+        dialog.resizable(True, True)
+        dialog.minsize(400, 350)  # Set minimum size to ensure usability
 
-        # Center the dialog
-        dialog.geometry("+%d+%d" % (self.root.winfo_rootx() + 100, self.root.winfo_rooty() + 100))
+        # Create a canvas and scrollbar for better content management
+        canvas = tk.Canvas(dialog)
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
 
-        main_frame = ttk.Frame(dialog, padding="20")
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        main_frame = ttk.Frame(scrollable_frame, padding="20")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # Input fields
@@ -901,17 +1033,17 @@ class CursorAccountManager:
 
         # Email
         ttk.Label(main_frame, text="Email:").pack(anchor=tk.W)
-        email_entry = ttk.Entry(main_frame, width=60)
+        email_entry = ttk.Entry(main_frame)
         email_entry.pack(fill=tk.X, pady=(0, 10))
 
         # Access Token
         ttk.Label(main_frame, text="Access Token:").pack(anchor=tk.W)
-        access_token_text = tk.Text(main_frame, height=4, width=60, wrap=tk.WORD)
+        access_token_text = tk.Text(main_frame, height=4, wrap=tk.WORD)
         access_token_text.pack(fill=tk.X, pady=(0, 10))
 
         # Refresh Token
         ttk.Label(main_frame, text="Refresh Token:").pack(anchor=tk.W)
-        refresh_token_text = tk.Text(main_frame, height=4, width=60, wrap=tk.WORD)
+        refresh_token_text = tk.Text(main_frame, height=4, wrap=tk.WORD)
         refresh_token_text.pack(fill=tk.X, pady=(0, 10))
 
         # Account Type
@@ -924,6 +1056,22 @@ class CursorAccountManager:
         # Buttons
         button_frame = ttk.Frame(main_frame)
         button_frame.pack()
+
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Bind mousewheel to canvas
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        # Cleanup mousewheel binding when dialog is closed
+        def on_dialog_close():
+            canvas.unbind_all("<MouseWheel>")
+            dialog.destroy()
+        
+        dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
 
         def apply_manual_input():
             email = email_entry.get().strip()
@@ -967,7 +1115,7 @@ class CursorAccountManager:
                 conn.close()
 
                 messagebox.showinfo("Success", "Account information updated successfully!\nRestart Cursor to see changes.")
-                dialog.destroy()
+                on_dialog_close()
 
                 # Refresh main window
                 self.refresh_account_info()
@@ -976,7 +1124,7 @@ class CursorAccountManager:
                 messagebox.showerror("Error", f"Error updating account: {e}")
 
         ttk.Button(button_frame, text="Apply", command=apply_manual_input).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Cancel", command=on_dialog_close).pack(side=tk.LEFT)
 
     def export_account_data(self):
         """Export current account data to JSON file"""
